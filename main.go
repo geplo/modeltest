@@ -41,6 +41,27 @@ type TimeMetadata struct {
 	DeletedAt *time.Time `json:"deleted_at,omitempty" db:"deleted_at"`
 }
 
+// MarshalJSON implements json.Marshaler interface.
+func (tm *TimeMetadata) MarshalJSON() ([]byte, error) {
+	if tm == nil {
+		return nil, nil
+	}
+	mm := map[string]time.Time{}
+	if !tm.CreatedAt.IsZero() {
+		mm["created_at"] = tm.CreatedAt
+	}
+	if !tm.UpdatedAt.IsZero() {
+		mm["updated_at"] = tm.UpdatedAt
+	}
+	if tm.DeletedAt != nil && !tm.DeletedAt.IsZero() {
+		mm["deleted_at"] = *tm.DeletedAt
+	}
+	if len(mm) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(mm)
+}
+
 // Scan1 implements sql.Scan interface.
 func (tm *TimeMetadata) Scan1(src interface{}) error {
 	s, err := ScanToString(src)
@@ -77,7 +98,25 @@ func (tm *TimeMetadata) Scan1(src interface{}) error {
 // Metadata .
 type Metadata struct {
 	Owner        *User `json:"owner,omitempty"`
-	TimeMetadata `json:",inline"`
+	TimeMetadata `json:",inline" db:"timemetadata"`
+}
+
+// MarshalJSON implements json.Marshaler interface.
+func (m Metadata) MarshalJSON() ([]byte, error) {
+	mm := map[string]interface{}{}
+	if m.Owner != nil {
+		mm["owner_id"] = m.Owner.ID
+	}
+	if !m.TimeMetadata.CreatedAt.IsZero() {
+		mm["created_at"] = m.TimeMetadata.CreatedAt
+	}
+	if !m.TimeMetadata.UpdatedAt.IsZero() {
+		mm["updated_at"] = m.TimeMetadata.UpdatedAt
+	}
+	if m.TimeMetadata.DeletedAt != nil && !m.TimeMetadata.DeletedAt.IsZero() {
+		mm["deleted_at"] = m.TimeMetadata.DeletedAt
+	}
+	return json.Marshal(mm)
 }
 
 // Scan1 implements sql.Scan interface.
@@ -105,13 +144,13 @@ func (m *Metadata) Scan1(src interface{}) error {
 
 // User .
 type User struct {
-	ID uuid.UUID `json:"user_id"  db:"user_id"`
+	ID uuid.UUID `json:"user_id" db:"user_id"`
 
-	Organizations UserOrganizations `json:"organizations,omitempty" db:"organizations"`
-	Teams         []UserTeam        `json:"teams,omitempty"         db:"teams"`
-	PaymentPlan   *PaymentPlan      `json:"payment_plan,omitempty"  db:"payment_plan"`
+	Organizations UserOrganizations `json:"organization_memberships,omitempty" db:"organization_memberships"`
+	Teams         []UserTeam        `json:"team_memberships,omitempty"         db:"team_memberships"`
+	PaymentPlan   *PaymentPlan      `json:"payment_plan,omitempty"             db:"payment_plan"`
 
-	Metadata `json:",inline"`
+	Metadata Metadata `json:"metadata" db:"metadata"`
 }
 
 // UserOrganizations .
@@ -142,7 +181,7 @@ type UserOrganization struct {
 
 	Role string `json:"role" db:"role"`
 
-	Metadata `json:",inline"`
+	Metadata Metadata `json:"metadata" db:"metadata"`
 }
 
 // Scan impements sql.Scanner interface.
@@ -183,17 +222,17 @@ type Organization struct {
 	Teams       []*Team             `json:"teams,omitempty"        db:"teams"`
 	PaymentPlan *PaymentPlan        `json:"payment_plan,omitempty" db:"payment_plan"`
 
-	Metadata `json:",inline"`
+	Metadata Metadata `json:"metadata" db:"metadata"`
 }
 
 // UserTeam .
 type UserTeam struct {
-	UserID         uuid.UUID `json:"user_id" db:"user_id"`
+	UserID         uuid.UUID `json:"user_id"         db:"user_id"`
 	OrganizationID uuid.UUID `json:"organization_id" db:"organization_id"`
 
 	Role string `json:"role" db:"role"`
 
-	TimeMetadata `json:",inline"`
+	Metadata Metadata `json:"metadata"`
 }
 
 // Team .
@@ -206,7 +245,7 @@ type Team struct {
 	Name     string `json:"name"     db:"name"`
 	Capacity int    `json:"capacity" db:"capacity"` // Maximum number of users in the team. 0 = no limit.
 
-	Metadata `json:",inline"`
+	Metadata Metadata `json:"metadata"`
 }
 
 // PaymentPlan .
@@ -218,7 +257,7 @@ type PaymentPlan struct {
 	Currency string  `json:"currency" db:"currency"`
 	Term     string  `json:"term"     db:"term"` // Term of the payment plan. "Yearly", "Monthly", etc..
 
-	Metadata `json:",inline"`
+	Metadata `json:",inline" db:"metadata"`
 }
 
 func test(ctx context.Context) error {
@@ -230,11 +269,11 @@ func test(ctx context.Context) error {
 	const queryGetUser = `
 SELECT
   u.user_id,
-  u.owner_id     AS "owner.user_id",
-  array_agg(uoj) AS "organizations",
-  u.created_at,
-  u.updated_at,
-  u.deleted_at
+  u.owner_id     AS "metadata.owner.user_id",
+  array_agg(uoj) AS "organization_memberships",
+  u.created_at   AS "metadata.timemetadata.created_at",
+  u.updated_at   AS "metadata.timemetadata.updated_at",
+  u.deleted_at   AS "metadata.timemetadata.deleted_at"
 FROM users u
 LEFT JOIN user_organization_join uoj
   USING (user_id)
@@ -265,10 +304,11 @@ INSERT INTO users (
 	query := db.Rebind(queryInsertUser)
 	if _, err := db.ExecContext(ctx, query,
 		u.ID,
-		u.Owner.ID,
+		u.Metadata.Owner.ID,
 	); err != nil {
 		return errors.Wrap(err, "error insert user")
 	}
+
 	return nil
 }
 
